@@ -6,8 +6,11 @@ import unidecode
 import heapq
 import random
 
+import notion_tools
+
 # ================= CONFIGURATION =================
 VERBOSE = True  # Afficher les logs détaillés
+MAX_TOOL_ITERATIONS = 5  # Limite de sécurité pour la boucle de tool-calling
 
 
 # ================= CHARGEMENT CONFIG =================
@@ -52,11 +55,22 @@ def load_config():
         "SPAM_WINDOW": cfg.get("SPAM_WINDOW", 10),
         "SPAM_MAX_MESSAGES": cfg.get("SPAM_MAX_MESSAGES", 3),
         "SPAM_TIMEOUT": cfg.get("SPAM_TIMEOUT", 30),
+        # Notion tool-calling (optional - feature stays disabled if no key is set)
+        "NOTION_API_KEY": os.environ.get("NOTION_API_KEY") or cfg.get("NOTION_API_KEY"),
+        "NOTION_DEFAULT_PARENT_ID": cfg.get("NOTION_DEFAULT_PARENT_ID"),
+        "NOTION_DEFAULT_PARENT_TYPE": cfg.get("NOTION_DEFAULT_PARENT_TYPE", "database_id"),
+        "TOOLS_ENABLED": cfg.get("TOOLS_ENABLED", True),
     }
 
 
 CONFIG = load_config()
 os.makedirs(CONFIG["DATA_DIR"], exist_ok=True)
+
+notion_tools.configure(
+    api_key=CONFIG["NOTION_API_KEY"],
+    default_parent_id=CONFIG["NOTION_DEFAULT_PARENT_ID"],
+    default_parent_type=CONFIG["NOTION_DEFAULT_PARENT_TYPE"],
+)
 
 
 # ================= ÉTAT GLOBAL =================
@@ -346,9 +360,37 @@ def compress_history(history):
 
 # ================= APPEL LLM =================
 
+def request_llm_completion(messages, tools=None):
+    """Envoie une requête de complétion à LM Studio, avec tools optionnels."""
+    payload = {
+        "model": CONFIG["MODEL_NAME"],
+        "messages": messages,
+        "temperature": CONFIG["LLM_TEMPERATURE"],
+        "max_tokens": CONFIG["LLM_MAX_TOKENS"],
+    }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    start = time.time()
+    r = requests.post(
+        CONFIG["LM_STUDIO_URL"],
+        json=payload,
+        timeout=60
+    )
+    r.raise_for_status()
+    duration = time.time() - start
+    vlog(f"⏱️  LLM répondu en {duration:.2f}s")
+
+    raw = r.json()
+    vlog(f"🔍 RAW RESPONSE: {raw}")
+
+    return raw["choices"][0].get("message", {})
+
+
 def call_llm(history, user_prompt, user_id, username, chat_id, chat_name):
-    """Appelle le modèle LLM"""
-    
+    """Appelle le modèle LLM avec une boucle de tool-calling (Notion)."""
+
     formatted_prompt = (
         f"[USER_PROMPT USER=({user_id}{', ' + username if username else ''}) "
         f"CHAT=({chat_id}, {chat_name})]\n"
@@ -361,32 +403,65 @@ def call_llm(history, user_prompt, user_id, username, chat_id, chat_name):
     messages += history
     messages.append({"role": "user", "content": formatted_prompt})
 
-    start = time.time()
-    r = requests.post(
-        CONFIG["LM_STUDIO_URL"],
-        json={
-            "model": CONFIG["MODEL_NAME"],
-            "messages": messages,
-            "temperature": CONFIG["LLM_TEMPERATURE"],
-            "max_tokens": CONFIG["LLM_MAX_TOKENS"]
-        },
-        timeout=60
-    )
-    r.raise_for_status()
-    duration = time.time() - start
-    print(f"⏱️  LLM répondu en {duration:.2f}s")
+    # Si LM Studio expose déjà les tools MCP de Notion nativement, il pourra
+    # les résoudre lui-même côté serveur. Sinon, on exécute le fallback Python
+    # ci-dessous dès qu'un tool_call est détecté dans la réponse.
+    tools = notion_tools.TOOL_DEFINITIONS if CONFIG["TOOLS_ENABLED"] else None
 
-    raw = r.json()
-    print("🔍 RAW RESPONSE:", raw)
+    for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
+        try:
+            message = request_llm_completion(messages, tools=tools)
+        except requests.exceptions.Timeout:
+            print("⏱️ LM Studio 응답 시간 초과 (timeout).")
+            return "죄송해요. 응답 시간이 초과됐어요. 잠시 후 다시 시도해 주세요."
 
-    message = raw["choices"][0].get("message", {})
-    content = message.get("content") or ""
+        tool_calls = message.get("tool_calls")
 
-    if not content.strip():
-        print("⚠️ LLM이 빈 응답을 반환했습니다.")
+        if tool_calls:
+            vlog(f"🛠️  모델이 {len(tool_calls)}개의 tool 호출을 요청함 (반복 {iteration}/{MAX_TOOL_ITERATIONS})")
+            messages.append(message)
+
+            for call in tool_calls:
+                fn = call.get("function", {})
+                name = fn.get("name")
+                raw_args = fn.get("arguments") or "{}"
+
+                try:
+                    arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                except json.JSONDecodeError:
+                    print(f"⚠️ Tool arguments JSON invalide pour {name}: {raw_args}")
+                    arguments = {}
+
+                vlog(f"🔧 Tool 선택: {name} | 인자: {arguments}")
+                result = notion_tools.execute_tool(name, arguments)
+                vlog(f"📦 Tool 결과 ({name}): {result}")
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.get("id"),
+                    "name": name,
+                    "content": notion_tools.tool_result_to_content(result),
+                })
+
+            continue  # Renvoyer les résultats des tools au modèle
+
+        content = (message.get("content") or "").strip()
+        reasoning = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
+
+        if content:
+            vlog(f"✅ 최종 모델 응답: {content[:200]}")
+            return content
+
+        if reasoning:
+            print("⚠️ LLM이 reasoning만 반환하고 최종 답변을 만들지 않았습니다.")
+        else:
+            print("⚠️ LLM이 빈 응답을 반환했습니다.")
+
         return "죄송해요. 응답을 만들지 못했어요. 다시 시도해 주세요."
 
-    return content
+    print("⚠️ Tool-calling 루프가 최대 반복 횟수에 도달했습니다.")
+    return "죄송해요. 요청을 처리하는 데 문제가 발생했어요. 다시 시도해 주세요."
+
 
 # ================= FILE D'ATTENTE =================
 def enqueue_request(update, user_id):
