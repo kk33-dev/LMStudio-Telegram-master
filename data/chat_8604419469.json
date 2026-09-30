@@ -1,0 +1,34 @@
+{
+  "chat_id": 8604419469,
+  "offset": 77529785,
+  "history": [
+    {
+      "role": "user",
+      "content": "안녕"
+    },
+    {
+      "role": "user",
+      "content": "[CONTEXT SUMMARY. derived from pruned messages][/CONTEXT SUMMARY]"
+    },
+    {
+      "role": "user",
+      "content": "[CONTEXT SUMMARY. derived from pruned messages][/CONTEXT SUMMARY]"
+    },
+    {
+      "role": "user",
+      "content": "[CONTEXT SUMMARY. derived from pruned messages][/CONTEXT SUMMARY]"
+    },
+    {
+      "role": "assistant",
+      "content": "안녕이라는 메모를 남겼습니다. 필요한 다른 내용이 있다면 알려주세요!"
+    },
+    {
+      "role": "user",
+      "content": "어디에 만든거야?"
+    },
+    {
+      "role": "assistant",
+      "content": "이 메시지는Telegram 채팅 내에서 작성된 내용입니다. 필요로 하는specific 정보를 알려주시면 더 도와드릴 수 있을 것 같습니다!"
+    }
+  ]
+}

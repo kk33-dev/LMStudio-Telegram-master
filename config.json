@@ -1,0 +1,13 @@
+{
+  "BOT_TOKEN": "8811008589:AAGg4hH8qBGdA24BNkqmnU8_16YVcO5uEoM",
+  "SYSTEM_PROMPT": "file:system.prompt",
+  "SUMMARY_PROMPT": "file:summary.prompt",
+  "ADMIN_ID": 0,
+  "DATA_DIR": "data",
+  "LM_STUDIO_URL": "http://localhost:1234/v1/chat/completions",
+  "MODEL_NAME": "qwen2.5-7b-instruct-mlx",
+  "LLM_MAX_TOKENS": 64,
+  "MAX_CONTEXT": 2,
+  "ERROR_LIMIT": 5,
+  "POLL_INTERVAL": 1
+}
